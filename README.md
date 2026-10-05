@@ -68,7 +68,6 @@ app/
 data/samples/            # apólices de exemplo (adicionar antes da demo)
 tests/                    # testes unitários e gabarito "golden"
 docs/                     # arquitetura e decisões (ADRs)
-Projeto_Final_Artefatos/  # pitch deck, vídeo e relatório técnico da entrega final
 ```
 
 Veja [docs/arquitetura.md](docs/arquitetura.md) para o detalhamento dos agentes e do fluxo,
