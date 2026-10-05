@@ -1,0 +1,14 @@
+{
+  "_observacao": "Gabarito manual de exemplo. Substitua pelos campos reais anotados à mão para cada apólice de teste (seção 10 da spec).",
+  "seguradora": "Nome da Seguradora",
+  "numero_apolice": "0000000000",
+  "vigencia_inicio": "2026-01-01",
+  "vigencia_fim": "2027-01-01",
+  "lmg_apolice": 10000000.0,
+  "premio_total": 50000.0,
+  "moeda": "BRL",
+  "base_cobertura": "claims made",
+  "exclusoes": [
+    {"titulo": "Atos dolosos/fraude", "pagina": 5}
+  ]
+}

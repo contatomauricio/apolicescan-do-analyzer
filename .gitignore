@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+data/insurminds.db
+data/uploads/
+.DS_Store
+.vscode/
+*.log
