@@ -54,3 +54,15 @@ def render(session: Session) -> None:
         ],
         use_container_width=True,
     )
+
+    with st.expander("🗑️ Limpar apólices processadas"):
+        st.warning(
+            "Remove permanentemente todas as apólices, documentos e arquivos enviados do banco de dados. "
+            "Esta ação não pode ser desfeita."
+        )
+        confirmar = st.checkbox("Confirmo que quero apagar todas as apólices processadas")
+        if st.button("Limpar todas as apólices", type="primary", disabled=not confirmar):
+            total = repository.limpar_tudo(session)
+            session.commit()  # st.rerun() interrompe o script antes do commit automático de get_session()
+            st.success(f"{total} documento(s) removido(s) com sucesso.")
+            st.rerun()

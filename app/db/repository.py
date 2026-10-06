@@ -1,7 +1,9 @@
 """Repositório: operações de leitura e escrita no banco de dados."""
 from __future__ import annotations
 
-from sqlalchemy import select
+from pathlib import Path
+
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Apolice, Cobertura, Comparacao, Documento, Exclusao, Franquia, Pagina
@@ -120,3 +122,25 @@ def salvar_comparacao(
     session.add(comparacao)
     session.flush()
     return comparacao
+
+
+def limpar_tudo(session: Session) -> int:
+    """Remove todos os documentos, apólices e dados relacionados, além dos arquivos enviados em disco.
+
+    Retorna a quantidade de documentos removidos. Ação destrutiva e irreversível.
+    """
+    caminhos = list(session.scalars(select(Documento.caminho)).all())
+
+    session.execute(delete(Comparacao))
+    session.execute(delete(Cobertura))
+    session.execute(delete(Franquia))
+    session.execute(delete(Exclusao))
+    session.execute(delete(Apolice))
+    session.execute(delete(Pagina))
+    session.execute(delete(Documento))
+    session.flush()
+
+    for caminho in caminhos:
+        Path(caminho).unlink(missing_ok=True)
+
+    return len(caminhos)
