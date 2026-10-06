@@ -22,6 +22,9 @@ MAX_CARACTERES_POR_BLOCO = 9000
 _STATUS_RATE_LIMIT = {413, 429}
 _TENTATIVAS_RATE_LIMIT = 3
 _ESPERA_RATE_LIMIT_SEGUNDOS = 65  # a janela de TPM da Groq reseta a cada 60s
+# O modelo nem sempre estrutura a saída corretamente de primeira para um schema tão grande;
+# uma nova tentativa com a mesma entrada frequentemente é suficiente (não é um erro determinístico).
+_TENTATIVAS_VALIDACAO = 3
 
 _agent = Agent(
     f"groq:{settings.model_extraction}",
@@ -85,29 +88,40 @@ def _mesclar(base: ApoliceDO | None, novo: ApoliceDO) -> ApoliceDO:
 
 
 def _executar_bloco_com_retry(texto_bloco: str) -> ApoliceDO | None:
-    """Chama o LLM para um bloco, com retry/backoff para erros de rate limit da Groq.
+    """Chama o LLM para um bloco, com retry/backoff para erros de rate limit da Groq e
+    novas tentativas para falhas de validação do schema (o modelo nem sempre estrutura a
+    saída corretamente de primeira, mas uma nova chamada frequentemente é suficiente).
 
     Retorna `None` (em vez de levantar) quando o bloco falha de forma não recuperável, para
     não perder o restante do documento por causa de um único bloco problemático.
     """
-    for tentativa in range(1, _TENTATIVAS_RATE_LIMIT + 1):
+    tentativas_rate_limit = 0
+    tentativas_validacao = 0
+
+    while True:
         try:
             execucao = _agent.run_sync(texto_bloco)
             return execucao.output
         except ModelHTTPError as erro:
-            if erro.status_code not in _STATUS_RATE_LIMIT or tentativa == _TENTATIVAS_RATE_LIMIT:
+            tentativas_rate_limit += 1
+            if erro.status_code not in _STATUS_RATE_LIMIT or tentativas_rate_limit >= _TENTATIVAS_RATE_LIMIT:
                 raise RuntimeError(f"Erro ao chamar o modelo de extração: {erro}") from erro
             print(
-                f"[extração] rate limit da Groq (tentativa {tentativa}/{_TENTATIVAS_RATE_LIMIT}), "
+                f"[extração] rate limit da Groq (tentativa {tentativas_rate_limit}/{_TENTATIVAS_RATE_LIMIT}), "
                 f"aguardando {_ESPERA_RATE_LIMIT_SEGUNDOS}s antes de tentar novamente: {erro}",
                 file=sys.stderr,
             )
             time.sleep(_ESPERA_RATE_LIMIT_SEGUNDOS)
         except UnexpectedModelBehavior as erro:
-            print(f"[extração] bloco ignorado após falha de validação do schema: {erro}", file=sys.stderr)
-            return None
-
-    return None
+            tentativas_validacao += 1
+            if tentativas_validacao >= _TENTATIVAS_VALIDACAO:
+                print(f"[extração] bloco ignorado após falha de validação do schema: {erro}", file=sys.stderr)
+                return None
+            print(
+                f"[extração] falha de validação do schema (tentativa {tentativas_validacao}/{_TENTATIVAS_VALIDACAO}), "
+                f"tentando novamente: {erro}",
+                file=sys.stderr,
+            )
 
 
 def extrair_apolice(paginas: list[tuple[int, str]]) -> ApoliceDO:
