@@ -1,10 +1,12 @@
 """Agente de Extração e Estruturação: lê o texto das páginas e devolve `ApoliceDO` validada."""
 from __future__ import annotations
 
+import sys
+import time
 from pathlib import Path
 
-from pydantic import ValidationError
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from app.config import settings
 from app.schemas.apolice import ApoliceDO
@@ -12,7 +14,14 @@ from app.schemas.apolice import ApoliceDO
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extraction.md"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 
-PAGINAS_POR_BLOCO = 12  # janela de páginas por chamada, para apólices longas (seção 5.2)
+# Contas gratuitas da Groq têm um limite baixo de tokens por minuto (TPM, ~8000 no tier
+# "on_demand"). Usamos a contagem de caracteres como aproximação do número de tokens e
+# mantemos os blocos pequenos o bastante para caber com folga nesse teto, mesmo somando o
+# overhead fixo do prompt de sistema e do schema estruturado (seção 5.2).
+MAX_CARACTERES_POR_BLOCO = 9000
+_STATUS_RATE_LIMIT = {413, 429}
+_TENTATIVAS_RATE_LIMIT = 3
+_ESPERA_RATE_LIMIT_SEGUNDOS = 65  # a janela de TPM da Groq reseta a cada 60s
 
 _agent = Agent(
     f"groq:{settings.model_extraction}",
@@ -26,6 +35,34 @@ _agent = Agent(
 def _formatar_bloco(paginas: list[tuple[int, str]]) -> str:
     partes = [f"--- Página {numero} ---\n{texto}" for numero, texto in paginas]
     return "\n\n".join(partes)
+
+
+def _dividir_em_blocos(
+    paginas: list[tuple[int, str]], max_caracteres: int = MAX_CARACTERES_POR_BLOCO
+) -> list[list[tuple[int, str]]]:
+    """Agrupa páginas consecutivas em blocos que não excedam `max_caracteres`.
+
+    Garante ao menos uma página por bloco, mesmo que uma única página sozinha já
+    ultrapasse o limite (nesse caso ela é enviada isolada, o que ainda pode estourar o
+    rate limit, mas é tratado com retry em `_executar_bloco_com_retry`).
+    """
+    blocos: list[list[tuple[int, str]]] = []
+    bloco_atual: list[tuple[int, str]] = []
+    tamanho_atual = 0
+
+    for pagina in paginas:
+        tamanho_pagina = len(pagina[1])
+        if bloco_atual and tamanho_atual + tamanho_pagina > max_caracteres:
+            blocos.append(bloco_atual)
+            bloco_atual = []
+            tamanho_atual = 0
+        bloco_atual.append(pagina)
+        tamanho_atual += tamanho_pagina
+
+    if bloco_atual:
+        blocos.append(bloco_atual)
+
+    return blocos
 
 
 def _mesclar(base: ApoliceDO | None, novo: ApoliceDO) -> ApoliceDO:
@@ -47,22 +84,46 @@ def _mesclar(base: ApoliceDO | None, novo: ApoliceDO) -> ApoliceDO:
     return mesclado
 
 
+def _executar_bloco_com_retry(texto_bloco: str) -> ApoliceDO | None:
+    """Chama o LLM para um bloco, com retry/backoff para erros de rate limit da Groq.
+
+    Retorna `None` (em vez de levantar) quando o bloco falha de forma não recuperável, para
+    não perder o restante do documento por causa de um único bloco problemático.
+    """
+    for tentativa in range(1, _TENTATIVAS_RATE_LIMIT + 1):
+        try:
+            execucao = _agent.run_sync(texto_bloco)
+            return execucao.output
+        except ModelHTTPError as erro:
+            if erro.status_code not in _STATUS_RATE_LIMIT or tentativa == _TENTATIVAS_RATE_LIMIT:
+                raise RuntimeError(f"Erro ao chamar o modelo de extração: {erro}") from erro
+            print(
+                f"[extração] rate limit da Groq (tentativa {tentativa}/{_TENTATIVAS_RATE_LIMIT}), "
+                f"aguardando {_ESPERA_RATE_LIMIT_SEGUNDOS}s antes de tentar novamente: {erro}",
+                file=sys.stderr,
+            )
+            time.sleep(_ESPERA_RATE_LIMIT_SEGUNDOS)
+        except UnexpectedModelBehavior as erro:
+            print(f"[extração] bloco ignorado após falha de validação do schema: {erro}", file=sys.stderr)
+            return None
+
+    return None
+
+
 def extrair_apolice(paginas: list[tuple[int, str]]) -> ApoliceDO:
     """Extrai os dados estruturados de uma apólice a partir do texto por página.
 
-    Divide o documento em blocos de páginas quando necessário e consolida o resultado.
-    A validação do esquema Pydantic acontece automaticamente; `pydantic-ai` reenvia o erro
-    ao modelo e tenta novamente até `max_validation_retries` vezes (RNF-02 / seção 5.2).
+    Divide o documento em blocos que caibam no limite de tokens por minuto da Groq e
+    consolida o resultado. Erros de rate limit (413/429) são reenviados após uma pequena
+    espera; blocos que falham na validação do schema são ignorados para não interromper
+    o processamento do restante do documento (RNF-02 / seção 5.2).
     """
     resultado: ApoliceDO | None = None
-    for inicio in range(0, len(paginas), PAGINAS_POR_BLOCO):
-        bloco = paginas[inicio : inicio + PAGINAS_POR_BLOCO]
+    for bloco in _dividir_em_blocos(paginas):
         texto_bloco = _formatar_bloco(bloco)
-        try:
-            execucao = _agent.run_sync(texto_bloco)
-        except ValidationError as erro:
-            raise RuntimeError(f"Resposta do LLM fora do esquema após as tentativas de retry: {erro}") from erro
-        resultado = _mesclar(resultado, execucao.output)
+        saida = _executar_bloco_com_retry(texto_bloco)
+        if saida is not None:
+            resultado = _mesclar(resultado, saida)
 
     if resultado is None:
         resultado = ApoliceDO()
