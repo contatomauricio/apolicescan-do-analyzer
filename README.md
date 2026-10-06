@@ -1,4 +1,4 @@
-# InsurMinds — Plataforma de Análise e Comparação de Apólices D&O
+# ApoliceScan — Plataforma de Análise e Comparação de Apólices D&O
 
 MVP desenvolvido para o Projeto Final do curso InsurMinds (I2A2). Recebe apólices D&O em PDF
 ou imagem, extrai informações automaticamente com OCR + LLM (Groq), estrutura os dados em

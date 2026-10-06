@@ -21,7 +21,7 @@ class Settings:
     model_comparison: str = os.getenv("GROQ_MODEL_COMPARISON", "openai/gpt-oss-120b")
     model_report: str = os.getenv("GROQ_MODEL_REPORT", "openai/gpt-oss-120b")
 
-    database_url: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'data' / 'insurminds.db'}")
+    database_url: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'data' / 'apolicescan.db'}")
     upload_dir: Path = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "data" / "uploads")))
 
     # Temperatura baixa para reduzir alucinação (RNF-05)
