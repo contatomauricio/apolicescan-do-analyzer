@@ -30,7 +30,9 @@ _agent = Agent(
     f"groq:{settings.model_extraction}",
     output_type=ApoliceDO,
     system_prompt=_SYSTEM_PROMPT,
-    model_settings={"temperature": settings.llm_temperature},
+    # max_tokens explícito evita que a resposta JSON (schema bem aninhado, com muitas
+    # coberturas/franquias/exclusões) seja cortada no meio antes de fechar todos os objetos.
+    model_settings={"temperature": settings.llm_temperature, "max_tokens": 4096},
     retries=settings.max_validation_retries,
 )
 
