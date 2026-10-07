@@ -6,13 +6,45 @@ representados com `valor=None`, nunca inventados (RNF-06).
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 T = TypeVar("T")
+
+_PADRAO_DATA_BR = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$")
+
+
+def _normalizar_data_br(valor: Any) -> Any:
+    """Converte datas no formato brasileiro (DD/MM/AAAA) para ISO (AAAA-MM-DD).
+
+    O modelo às vezes copia a data literalmente como aparece no texto em vez de
+    convertê-la, mesmo com a instrução do prompt; aceitar os dois formatos evita que
+    isso derrube a validação do bloco inteiro.
+    """
+    if isinstance(valor, str):
+        match = _PADRAO_DATA_BR.match(valor.strip())
+        if match:
+            dia, mes, ano = match.groups()
+            return f"{ano}-{int(mes):02d}-{int(dia):02d}"
+    return valor
+
+
+def _desembrulhar_campo_aninhado(valor: Any) -> Any:
+    """Extrai o valor literal caso o modelo tenha envolvido um campo de texto simples
+    (ex.: `Cobertura.nome`) na estrutura `{valor, pagina, trecho_origem, confianca}`
+    usada apenas nos campos de nível superior de `ApoliceDO`. Também converte números
+    soltos (ex.: o modelo retornando 0.0 em vez de "0,00") para string, já que esses
+    campos de listas (coberturas/franquias/exclusões) são texto livre no esquema.
+    """
+    if isinstance(valor, dict) and "valor" in valor:
+        valor = valor["valor"]
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        return str(valor)
+    return valor
 
 
 class Campo(BaseModel, Generic[T]):
@@ -23,6 +55,11 @@ class Campo(BaseModel, Generic[T]):
     trecho_origem: str | None = Field(default=None, description="Trecho literal do texto que originou o valor")
     confianca: float = Field(default=0.0, ge=0.0, le=1.0, description="Confiança da extração (0 a 1)")
 
+    @field_validator("valor", mode="before")
+    @classmethod
+    def _validar_valor(cls, valor: Any) -> Any:
+        return _normalizar_data_br(valor)
+
 
 class Cobertura(BaseModel):
     nome: str
@@ -32,13 +69,23 @@ class Cobertura(BaseModel):
     trecho: str | None = None
     confianca: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    @field_validator("nome", "descricao", "sublimite", mode="before")
+    @classmethod
+    def _validar_texto(cls, valor: Any) -> Any:
+        return _desembrulhar_campo_aninhado(valor)
+
 
 class Franquia(BaseModel):
-    tipo: str
+    tipo: str = "não especificado"
     valor: str | None = None
     descricao: str | None = None
     pagina: int | None = None
     trecho: str | None = None
+
+    @field_validator("tipo", "valor", "descricao", mode="before")
+    @classmethod
+    def _validar_texto(cls, valor: Any) -> Any:
+        return _desembrulhar_campo_aninhado(valor)
 
 
 class Exclusao(BaseModel):
@@ -46,6 +93,11 @@ class Exclusao(BaseModel):
     descricao: str | None = None
     pagina: int | None = None
     trecho: str | None = None
+
+    @field_validator("titulo", "descricao", mode="before")
+    @classmethod
+    def _validar_texto(cls, valor: Any) -> Any:
+        return _desembrulhar_campo_aninhado(valor)
 
 
 class ApoliceDO(BaseModel):

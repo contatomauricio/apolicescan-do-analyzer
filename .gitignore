@@ -6,6 +6,8 @@ venv/
 *.egg-info/
 .pytest_cache/
 data/apolicescan.db
+data/apolicescan.db-shm
+data/apolicescan.db-wal
 data/uploads/
 .DS_Store
 .vscode/
