@@ -27,8 +27,10 @@ def render(session: Session) -> None:
                 apolice = ingerir_e_estruturar(session, arquivo.name, arquivo.read())
                 st.success(f"'{arquivo.name}' processado com sucesso. Apólice id={apolice.id}, seguradora={apolice.seguradora or 'não localizado'}.")
             except ArquivoInvalidoError as erro:
+                session.rollback()  # evita que a falha neste arquivo invalide a sessão para os próximos
                 st.error(f"'{arquivo.name}': {erro}")
             except Exception as erro:  # erro de API/LLM ou validação de esquema
+                session.rollback()
                 st.error(f"'{arquivo.name}': falha ao processar o documento. Detalhe: {erro}")
             barra.progress(indice / total, text=f"Concluído {arquivo.name}")
 
