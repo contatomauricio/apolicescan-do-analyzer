@@ -24,6 +24,10 @@ def salvar_paginas(session: Session, documento_id: int, paginas: list[tuple[int,
     if documento is not None:
         documento.paginas = len(paginas)
         documento.status = "texto_extraido"
+    # Necessário: a sessão usa autoflush=False, então, sem este flush, uma consulta
+    # subsequente (ex.: obter_paginas, chamada logo depois em ingerir_e_estruturar) não
+    # enxergaria as páginas recém-adicionadas e retornaria uma lista vazia.
+    session.flush()
 
 
 def salvar_apolice(session: Session, documento_id: int, dados: ApoliceDO) -> Apolice:
