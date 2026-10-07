@@ -15,13 +15,15 @@ _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extraction.
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 
 # Contas gratuitas da Groq têm um limite baixo de tokens por minuto (TPM, ~8000 no tier
-# "on_demand"). Usamos a contagem de caracteres como aproximação do número de tokens e
-# mantemos os blocos pequenos o bastante para caber com folga nesse teto, mesmo somando o
-# overhead fixo do prompt de sistema e do schema estruturado (seção 5.2).
-MAX_CARACTERES_POR_BLOCO = 9000
+# "on_demand"), e esse teto parece contabilizar também a reserva de `max_tokens` da resposta,
+# não só o texto de entrada. Mantemos blocos pequenos e max_tokens moderado para deixar folga,
+# mas o teto observado oscila (provavelmente por uso concorrente na mesma conta/chave), então
+# nenhum tamanho fixo garante sucesso sempre — por isso um bloco que esgota as tentativas é
+# apenas pulado, em vez de abortar o documento inteiro (seção 5.2).
+MAX_CARACTERES_POR_BLOCO = 5000
 _STATUS_RATE_LIMIT = {413, 429}
-_TENTATIVAS_RATE_LIMIT = 3
-_ESPERA_RATE_LIMIT_SEGUNDOS = 65  # a janela de TPM da Groq reseta a cada 60s
+_TENTATIVAS_RATE_LIMIT = 4
+_ESPERA_RATE_LIMIT_SEGUNDOS = 70  # a janela de TPM da Groq reseta a cada 60s
 # O modelo nem sempre estrutura a saída corretamente de primeira para um schema tão grande;
 # uma nova tentativa com a mesma entrada frequentemente é suficiente (não é um erro determinístico).
 _TENTATIVAS_VALIDACAO = 3
@@ -32,7 +34,9 @@ _agent = Agent(
     system_prompt=_SYSTEM_PROMPT,
     # max_tokens explícito evita que a resposta JSON (schema bem aninhado, com muitas
     # coberturas/franquias/exclusões) seja cortada no meio antes de fechar todos os objetos.
-    model_settings={"temperature": settings.llm_temperature, "max_tokens": 4096},
+    # O valor é um meio-termo: alto o suficiente para não truncar, mas sem inflar demais o
+    # total "reservado" que a Groq soma ao calcular o limite de tokens por minuto.
+    model_settings={"temperature": settings.llm_temperature, "max_tokens": 3000},
     retries=settings.max_validation_retries,
 )
 
@@ -105,9 +109,15 @@ def _executar_bloco_com_retry(texto_bloco: str) -> ApoliceDO | None:
             execucao = _agent.run_sync(texto_bloco)
             return execucao.output
         except ModelHTTPError as erro:
-            tentativas_rate_limit += 1
-            if erro.status_code not in _STATUS_RATE_LIMIT or tentativas_rate_limit >= _TENTATIVAS_RATE_LIMIT:
+            if erro.status_code not in _STATUS_RATE_LIMIT:
                 raise RuntimeError(f"Erro ao chamar o modelo de extração: {erro}") from erro
+            tentativas_rate_limit += 1
+            if tentativas_rate_limit >= _TENTATIVAS_RATE_LIMIT:
+                print(
+                    f"[extração] bloco ignorado após esgotar tentativas de rate limit: {erro}",
+                    file=sys.stderr,
+                )
+                return None
             print(
                 f"[extração] rate limit da Groq (tentativa {tentativas_rate_limit}/{_TENTATIVAS_RATE_LIMIT}), "
                 f"aguardando {_ESPERA_RATE_LIMIT_SEGUNDOS}s antes de tentar novamente: {erro}",
@@ -130,9 +140,9 @@ def extrair_apolice(paginas: list[tuple[int, str]]) -> ApoliceDO:
     """Extrai os dados estruturados de uma apólice a partir do texto por página.
 
     Divide o documento em blocos que caibam no limite de tokens por minuto da Groq e
-    consolida o resultado. Erros de rate limit (413/429) são reenviados após uma pequena
-    espera; blocos que falham na validação do schema são ignorados para não interromper
-    o processamento do restante do documento (RNF-02 / seção 5.2).
+    consolida o resultado. Tanto erros de rate limit (413/429) esgotados quanto falhas de
+    validação do schema fazem o bloco ser ignorado (não o documento inteiro), para que
+    outros blocos que tenham sucesso ainda contribuam para o resultado final (RNF-02 / seção 5.2).
     """
     resultado: ApoliceDO | None = None
     for bloco in _dividir_em_blocos(paginas):
